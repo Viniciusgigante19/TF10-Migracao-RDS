@@ -1,43 +1,31 @@
 #!/bin/bash
-# create-rds.sh - Criação com suporte a IPv4 e IPv6
-
 source "$(dirname "$0")/../.env"
 
-echo "1. Obtendo ID da VPC padrão..."
+# 1. FORÇAR DESCOBERTA DE IPV4
+# O parâmetro -4 obriga o curl a usar apenas IPv4, ignorando o IPv6 da sua máquina.
+MY_IP=$(curl -s -4 https://checkip.amazonaws.com)
+
+echo "IP Detectado (IPv4): $MY_IP"
+
+# 2. VPC E SECURITY GROUP
 VPC_ID=$(aws ec2 describe-vpcs --filters "Name=is-default,Values=true" --query "Vpcs[0].VpcId" --output text)
 
-echo "2. Criando Security Group para o RDS..."
 SG_ID=$(aws ec2 create-security-group \
     --group-name "RDS-SG-TF10-$(date +%s)" \
-    --description "Acesso Dual Stack para TF10" \
+    --description "Acesso exclusivo IPv4" \
     --vpc-id "$VPC_ID" \
     --query 'GroupId' --output text)
 
-echo "3. Capturando e autorizando IPs..."
+# 3. AUTORIZAÇÃO UNILATERAL (IPv4 Only)
+# Agora não há erro de sintaxe, pois estamos usando apenas --cidr com IPv4.
+aws ec2 authorize-security-group-ingress \
+    --group-id "$SG_ID" \
+    --protocol tcp \
+    --port 5432 \
+    --cidr "$MY_IP/32"
 
-# Captura IPv4
-MY_IPV4=$(curl -s -4 https://checkip.amazonaws.com)
-if [ ! -z "$MY_IPV4" ]; then
-    echo "Liberando IPv4: $MY_IPV4"
-    aws ec2 authorize-security-group-ingress \
-        --group-id "$SG_ID" \
-        --protocol tcp \
-        --port 5432 \
-        --cidr "$MY_IPV4/32"
-fi
-
-# Captura IPv6
-MY_IPV6=$(curl -s -6 ifconfig.me)
-if [[ "$MY_IPV6" == *":"* ]]; then
-    echo "Liberando IPv6: $MY_IPV6"
-    aws ec2 authorize-security-group-ingress \
-        --group-id "$SG_ID" \
-        --protocol tcp \
-        --port 5432 \
-        --ipv6-cidr "$MY_IPV6/128"
-fi
-
-echo "4. Criando instância RDS (Dual-Stack)..."
+# 4. CRIAÇÃO DO RDS (IPv4 Only)
+# Removendo qualquer menção a 'dual' para evitar o erro de Subnet Group.
 aws rds create-db-instance \
     --db-instance-identifier "$DB_ID" \
     --db-instance-class db.t3.micro \
@@ -49,12 +37,6 @@ aws rds create-db-instance \
     --publicly-accessible \
     --vpc-security-group-ids "$SG_ID" \
     --storage-type gp3 \
-    --network-type dual \
-    --backup-retention-period 1 \
-    --tags Key=Disciplina,Value=ImplementacaoSistemas Key=Aluno,Value=Vinicius \
-    --region "$AWS_REGION" \
-| tee create-rds-log.json
-
-echo "---------------------------------------------------------------"
-echo "Infraestrutura enviada. IPs autorizados: $MY_IPV4 e $MY_IPV6"
-echo "---------------------------------------------------------------"
+    --network-type IPV4 \
+    --tags Key=Aluno,Value=Vinicius \
+    --region "$AWS_REGION"
